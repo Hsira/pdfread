@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我的全能文档阅读器</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <style>
+        :root {
+            --sidebar-width: 250px;
+            --primary-color: #2c3e50;
+        }
+        body, html { margin: 0; padding: 0; height: 100%; font-family: sans-serif; overflow: hidden; background: #f4f4f9; }
+        
+        /* 布局结构 */
+        #container { display: flex; height: 100vh; }
+        
+        /* 侧边栏 */
+        #sidebar {
+            width: var(--sidebar-width);
+            background: var(--primary-color);
+            color: white;
+            display: flex;
+            flex-direction: column;
+            transition: 0.3s;
+        }
+        .sidebar-header { padding: 20px; text-align: center; border-bottom: 1px solid #3e5871; }
+        #file-list { flex: 1; overflow-y: auto; padding: 10px; list-style: none; margin: 0; }
+        #file-list li { 
+            padding: 10px; border-radius: 5px; cursor: pointer; margin-bottom: 5px;
+            background: #3e5871; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        #file-list li:hover { background: #5d82a6; }
+
+        /* 主视图区 */
+        #main-view { flex: 1; position: relative; overflow: hidden; display: flex; flex-direction: column; }
+        
+        /* 操作栏 */
+        #toolbar { 
+            padding: 10px; background: white; border-bottom: 1px solid #ddd; 
+            display: flex; gap: 10px; align-items: center; z-index: 10;
+        }
+
+        /* 阅读容器：关键的缩放和拖拽区域 */
+        #viewer-container {
+            flex: 1;
+            position: relative;
+            overflow: auto; /* 允许原生滚动作为兜底 */
+            cursor: grab;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+        }
+        #viewer-container:active { cursor: grabbing; }
+        
+        canvas { box-shadow: 0 0 10px rgba(0,0,0,0.2); margin: 20px; transition: transform 0.1s ease-out; transform-origin: top center; }
+
+        /* 响应式：手机端隐藏侧边栏 */
+        @media (max-width: 768px) {
+            #sidebar { width: 0; overflow: hidden; }
+            #sidebar.open { width: 200px; }
+        }
+    </style>
+</head>
+<body>
+
+<div id="container">
+    <div id="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <h3>我的文档库</h3>
+            <input type="file" id="upload-input" multiple style="display: none;">
+            <button onclick="document.getElementById('upload-input').click()" style="width: 100%; cursor: pointer;">上传新文件</button>
+        </div>
+        <ul id="file-list">
+            </ul>
+    </div>
+
+    <div id="main-view">
+        <div id="toolbar">
+            <button id="toggle-btn" onclick="toggleSidebar()">☰ 列表</button>
+            <span id="file-name">请选择或上传文件</span>
+            <div style="margin-left: auto;">
+                <button onclick="changeZoom(-0.1)">- 缩小</button>
+                <span id="zoom-percent">100%</span>
+                <button onclick="changeZoom(0.1)">+ 放大</button>
+            </div>
+        </div>
+        
+        <div id="viewer-container" id="viewer-container">
+            <div id="content-area"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // 配置 PDF.js worker
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    let currentZoom = 1.0;
+    let currentPdf = null;
+    let isDragging = false;
+    let startX, startY, scrollLeft, scrollTop;
+
+    const viewerContainer = document.getElementById('viewer-container');
+    const contentArea = document.getElementById('content-area');
+    const fileList = document.getElementById('file-list');
+    const uploadInput = document.getElementById('upload-input');
+
+    // 1. 处理文件上传与列表显示
+    uploadInput.addEventListener('change', (e) => {
+        const files = e.target.files;
+        for (let file of files) {
+            const li = document.createElement('li');
+            li.textContent = file.name;
+            li.onclick = () => loadFile(file);
+            fileList.appendChild(li);
+        }
+    });
+
+    // 2. 加载文件
+    async function loadFile(file) {
+        document.getElementById('file-name').textContent = file.name;
+        contentArea.innerHTML = '正在加载...';
+        currentZoom = 1.0;
+        updateZoomDisplay();
+
+        if (file.type === 'application/pdf') {
+            renderPDF(file);
+        } else if (file.type.startsWith('text/')) {
+            const text = await file.text();
+            contentArea.innerHTML = `<pre style="padding:20px; background:white; max-width:90%;">${text}</pre>`;
+        } else {
+            contentArea.innerHTML = `<div style="padding:20px;">此类型文件暂不支持直接预览，仅支持 PDF 和 文本文件。</div>`;
+        }
+    }
+
+    // 3. 渲染 PDF (核心功能)
+    async function renderPDF(file) {
+        const arrayBuffer = await file.arrayBuffer();
+        currentPdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+        contentArea.innerHTML = '';
+        
+        // 为了演示，我们默认只渲染第一页，大文件建议只渲染当前可见页
+        const page = await currentPdf.getPage(1);
+        const canvas = document.createElement('canvas');
+        contentArea.appendChild(canvas);
+        renderPage(page, canvas);
+    }
+
+    async function renderPage(page, canvas) {
+        const viewport = page.getViewport({ scale: currentZoom });
+        const context = canvas.getContext('2d');
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+
+        await page.render({ canvasContext: context, viewport: viewport }).promise;
+    }
+
+    // 4. 缩放逻辑 (滚轮与按钮)
+    function changeZoom(delta) {
+        currentZoom = Math.min(Math.max(0.5, currentZoom + delta), 3.0);
+        updateZoomDisplay();
+        if (currentPdf) {
+            renderPDFFromCurrent(); // 重新渲染以保持清晰度
+        }
+    }
+
+    function updateZoomDisplay() {
+        document.getElementById('zoom-percent').textContent = Math.round(currentZoom * 100) + '%';
+    }
+
+    // 监听鼠标滚轮缩放
+    viewerContainer.addEventListener('wheel', (e) => {
+        if (e.ctrlKey) { // 按住 Ctrl 滚动时缩放
+            e.preventDefault();
+            changeZoom(e.deltaY > 0 ? -0.1 : 0.1);
+        }
+    }, { passive: false });
+
+    // 5. 拖拽逻辑 (抓手手感)
+    viewerContainer.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        startX = e.pageX - viewerContainer.offsetLeft;
+        startY = e.pageY - viewerContainer.offsetTop;
+        scrollLeft = viewerContainer.scrollLeft;
+        scrollTop = viewerContainer.scrollTop;
+    });
+
+    viewerContainer.addEventListener('mouseleave', () => isDragging = false);
+    viewerContainer.addEventListener('mouseup', () => isDragging = false);
+
+    viewerContainer.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        e.preventDefault();
+        const x = e.pageX - viewerContainer.offsetLeft;
+        const y = e.pageY - viewerContainer.offsetTop;
+        const walkX = (x - startX) * 1.5; 
+        const walkY = (y - startY) * 1.5;
+        viewerContainer.scrollLeft = scrollLeft - walkX;
+        viewerContainer.scrollTop = scrollTop - walkY;
+    });
+
+    function toggleSidebar() {
+        document.getElementById('sidebar').classList.toggle('open');
+    }
+
+    async function renderPDFFromCurrent() {
+        const page = await currentPdf.getPage(1);
+        const canvas = contentArea.querySelector('canvas');
+        if (canvas) renderPage(page, canvas);
+    }
+</script>
+
+</body>
+</html>
